@@ -9,7 +9,7 @@ def get_connection(db_file=DB_FILE) -> sqlite3.Connection:
     if not db_file.exists():
         raise FileNotFoundError(f"\n 错误，数据库文件未找到: {db_file}\n请先手动运行一下初始化脚本python database/mock_db.py")
 
-    conn = sqlite3.connect(db_file)
+    conn = sqlite3.connect(db_file, check_same_thread=False)
     conn.execute('PRAGMA foreign_keys=ON')  # 启动 SQLite 外键功能
     return conn
 
