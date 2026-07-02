@@ -23,7 +23,8 @@
 
 ## 🏗️ 系统架构图 (Architecture)
 
-<div align=center>![这里写图片描述](/docs/architecture.png)
+![这里写图片描述](/docs/architecture.png)
+
 ---
 
 ## 💻 技术栈 (Tech Stack)
