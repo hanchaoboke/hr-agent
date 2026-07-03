@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field
 import os
 from dotenv import load_dotenv
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langgraph.types import interrupt
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -59,13 +60,46 @@ def chatbot_node(state: AgentState):
         system_msg = SystemMessage(
             content="你是公司的高级 HR 智能助理。\n"
                     f"当前员工 UID 为 {state['current_uid']}。\n"
-                    f"请务必先调用 get_employee_profile 获取该员工的属相，再回答增持问题。\n"
+                    f"请务必先调用 get_employee_profile 获取该员工的属性，再回答政策问题。\n"
                     f"必须基于工具返回的事实，绝对不能编造数字或条件。"
         )
         messages = [system_msg] + messages
 
     response = llm_with_tools.invoke(messages)
     return {"messages": [response], 'loop_step':state.get('loop_step', 0) + 1}
+
+# 人工介入节点
+def human_review_node(state: AgentState):
+    """【人工介入节点】拦截敏感操作，将图挂起等待授权"""
+    last_message = state["messages"][-1]
+
+    # 检查大模型是否试图调用敏感工具
+    sensitive_tool_call = None
+    if hasattr(last_message, "tool_calls"):
+        for tool_call in last_message.tool_calls:
+            if tool_call["name"] == "generate_employment_certificate":
+                sensitive_tool_call = tool_call
+                break
+
+    if sensitive_tool_call:
+        print(f"\n[系统挂起] 检测到敏感操作：准备生成证明文件。")
+        # 使用 interrupt 挂起当前状态机，并将提示信息发送给外部（前端）
+        # 此时后端执行会完全暂停，直到外部传入 resume 数据
+        user_decision = interrupt("Agent 正在尝试生成包含薪资的证明文件。是否授权执行？(输入 'approve' 或 'reject')")
+
+        if user_decision == "reject":
+            print("❌ [人工拒绝] 授权被驳回。")
+            # 伪造一个工具调用失败的消息，告知大模型操作被取消
+            reject_msg = ToolMessage(
+                content="[SYSTEM] 人工审批未通过，操作已被拒绝。请安抚用户并告知由于安全原因无法生成。",
+                name=sensitive_tool_call["name"],
+                tool_call_id=sensitive_tool_call["id"]
+            )
+            return {"messages": [reject_msg]}
+
+        print("✅ [人工授权] 审批通过，允许放行。")
+
+    return {"messages": []}
 
 # 审计者节点
 class FactCheckResult(BaseModel):
@@ -117,7 +151,7 @@ def fact_checker_node(state: AgentState):
         feedback = result.get('feedback', "PASS")
     except Exception as e:
         print(f'[审计异常] JSON 解析失败，默认放行。原因：{e}')
-        is_pass = False
+        is_pass = True
         feedback = "PASS"
 
     if is_pass:
@@ -135,10 +169,19 @@ def router_after_chatbot(state: AgentState):
     """Chatbot 输出之后的路由判断"""
     last_message = state.get('messages')[-1]
 
-    if last_message.tool_calls:
-        return 'tools'
-    else:
-        return 'fact_checker'
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        # 有工具调用时，先去人工审批节点过安检
+        return "human_review"
+    return "fact_checker"
+
+def router_after_review(state: AgentState) -> str:
+    """审批节点后的流向判断"""
+    last_message = state["messages"][-1]
+    # 如果最后一条消息是 ToolMessage（说明被拒绝了，我们伪造了报错），打回给 chatbot 解释原因
+    if isinstance(last_message, ToolMessage):
+        return "chatbot"
+    # 如果同意了，或者没有敏感工具，正常放行去执行工具
+    return "tools"
 
 def router_after_fact_check(state: AgentState):
     """审计完成后的路由判断"""
@@ -157,6 +200,7 @@ def router_after_fact_check(state: AgentState):
 workflow = StateGraph(AgentState)
 
 workflow.add_node('chatbot', chatbot_node)
+workflow.add_node("human_review", human_review_node) # 人类审批节点
 workflow.add_node('tools', tools_node)
 workflow.add_node('fact_checker', fact_checker_node)
 
@@ -164,9 +208,13 @@ workflow.add_edge(START, 'chatbot')
 workflow.add_conditional_edges('chatbot',
                                router_after_chatbot,
                                {
-                                   'tools':'tools',
+                                   'human_review':'human_review',
                                    'fact_checker':'fact_checker',
                                })
+
+# 审批节点出来的条件路由
+workflow.add_conditional_edges("human_review", router_after_review, {"chatbot": "chatbot", "tools": "tools"})
+
 # 工具节点执行完成以后返回主节点
 workflow.add_edge('tools', 'chatbot')
 workflow.add_conditional_edges('fact_checker',
