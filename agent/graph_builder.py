@@ -10,6 +10,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langchain_core.output_parsers import JsonOutputParser
+from langgraph.checkpoint.memory import InMemorySaver
 
 from tools.hr_tools import get_employee_profile, check_leave_balance, generate_employment_certificate
 from agent.rag_pipeline2 import search_hr_policy
@@ -38,6 +39,20 @@ tools_node = ToolNode(tools)
 def chatbot_node(state: AgentState):
     """[执行者节点]意图理解、工具调用与内容生成"""
     messages = state.get('messages', [])
+
+    last_message = messages[-1]
+    # 拦截应用层发来的“超时总结”隐藏指令
+    if isinstance(last_message, HumanMessage) and last_message.content == "__SYS_IDLE_TIMEOUT__":
+        print("\n[触发超时] 正在压缩会话历史，生成自动总结...")
+        # 让大模型对历史消息进行总结（排除掉这条隐藏指令本身）
+        summary_llm = llm.model_copy(update={'temperature': 0.3})
+        summary_prompt = (
+            "你是一个HR助理。请用简短的一两句话，总结上面对话中员工咨询的核心问题以及你给出的最终结论。\n"
+            "直接输出总结结果，并以【会话闲置总结】这几个字开头。"
+        )
+        # 将提示词作为临时系统消息追加进去让其总结
+        response = summary_llm.invoke(messages[:-1] + [SystemMessage(content=summary_prompt)])
+        return {"messages": [response]}  # 返回总结信息
 
     # 首轮对话注入 System prompt
     if len(messages) == 1:
@@ -161,4 +176,6 @@ workflow.add_conditional_edges('fact_checker',
                                    'end':END
                                })
 
-hr_agent_app = workflow.compile()
+memory = InMemorySaver()
+
+hr_agent_app = workflow.compile(checkpointer=memory)
