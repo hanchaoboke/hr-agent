@@ -1,0 +1,50 @@
+# 飞羽科技 HR Agent —— 基础设施 (PostgreSQL + Redis)
+#
+# 只容器化基础设施：Postgres 存员工数据，Redis(Stack) 做 LangGraph checkpointer。
+# api.py / app.py / RAG 仍在本机（Mac）运行，以保留 mps 加速和本地 BGE 模型。
+#
+# 用法：
+#   docker compose up -d          # 启动
+#   docker compose ps             # 查看健康状态
+#   python database/mock_db.py    # 首次：建表 + 灌种子数据
+#   docker compose down           # 停止（保留数据卷）
+#   docker compose down -v        # 停止并清空数据
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: hr_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hr_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-hr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hr_password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hr} -d ${POSTGRES_DB:-hr_agent}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    # redis-stack 自带 RediSearch/JSON 模块，RedisSaver 建索引依赖它们。
+    # （若你的环境能联网，也可换成更精简的 redis/redis-stack-server:latest）
+    image: redis/redis-stack:latest
+    container_name: hr_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:

@@ -38,7 +38,11 @@ config = {"configurable": {"thread_id": st.session_state.thread_id}}
 state_snapshot = hr_agent_app.get_state(config)
 
 if state_snapshot.next:
-    interrupt_msg = state_snapshot.tasks[0].interrupts[0].value
+    # RedisSaver 的 pending-write 存在读滞后，interrupts 可能暂为空元组，需兜底
+    if state_snapshot.interrupts:
+        interrupt_msg = state_snapshot.interrupts[0].value
+    else:
+        interrupt_msg = "Agent 正在尝试执行敏感操作，等待您的授权。(approve / reject)"
     with st.chat_message("assistant"):
         st.warning(f"🛡️ **安全拦截 (Human-in-the-loop)**\n\n{interrupt_msg}")
 

@@ -11,7 +11,8 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langchain_core.output_parsers import JsonOutputParser
-from langgraph.checkpoint.memory import InMemorySaver
+import redis
+from langgraph.checkpoint.redis import RedisSaver
 
 from tools.hr_tools import get_employee_profile, check_leave_balance, generate_employment_certificate
 from agent.rag_pipeline2 import search_hr_policy
@@ -224,6 +225,10 @@ workflow.add_conditional_edges('fact_checker',
                                    'end':END
                                })
 
-memory = InMemorySaver()
+# 使用 Redis 做 checkpointer：对话状态/多轮记忆/挂起的人工审批持久化到 Redis，进程重启不丢。
+# 注意：RedisSaver 依赖 RediSearch/JSON 模块，必须连 redis-stack（见 docker-compose.yml）。
+_redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
+checkpointer = RedisSaver(redis_client=_redis_client)
+checkpointer.setup()  # 首次运行创建 RediSearch 索引，必须调用一次（幂等）
 
-hr_agent_app = workflow.compile(checkpointer=memory)
+hr_agent_app = workflow.compile(checkpointer=checkpointer)

@@ -80,17 +80,23 @@ async def chat_endpoint(request: ChatRequest):
     config = {"configurable": {"thread_id": request.thread_id}}
     state = {"messages": [HumanMessage(content=request.message)], "current_uid": request.uid, "loop_step": 0}
     final_answer = ""
+    interrupt_message = ""
 
     try:
-        for event in hr_agent_app.stream(state, config, stream_mode="values"):
-            last_msg = event["messages"][-1]
+        # 同时订阅 values（取回答）和 updates（取 __interrupt__）。
+        # 注意：不要在 stream 结束后靠 get_state() 去拿 interrupt —— RedisSaver 的
+        # pending-write 落库存在读滞后，get_state() 拿到的 interrupts 可能为空元组。
+        for stream_mode, chunk in hr_agent_app.stream(state, config, stream_mode=["values", "updates"]):
+            if stream_mode == "updates":
+                if "__interrupt__" in chunk:
+                    interrupt_message = chunk["__interrupt__"][0].value
+                continue
+            last_msg = chunk["messages"][-1]
             if isinstance(last_msg, HumanMessage): continue
             if last_msg.type == "ai" and not last_msg.tool_calls:
                 final_answer = last_msg.content
 
-        state_snapshot = hr_agent_app.get_state(config)
-        if state_snapshot.next:
-            interrupt_message = state_snapshot.tasks[0].interrupts[0].value
+        if interrupt_message:
             # 如果被挂起，不需要开启定时总结器
             return ChatResponse(code=202, thread_id=request.thread_id, status="waiting_for_review",
                                 interrupt_msg=interrupt_message)

@@ -352,3 +352,8 @@ yapf @ file:///opt/miniconda3/conda-bld/yapf_1761560517616/work
 yarl @ file:///opt/miniconda3/conda-bld/yarl_1762250143081/work
 zipp @ file:///opt/miniconda3/conda-bld/zipp_1763977861804/work
 zstandard==0.25.0
+
+# ---- Docker/PostgreSQL/Redis 部署新增依赖 ----
+psycopg2-binary
+redis
+langgraph-checkpoint-redis
